@@ -1,3 +1,10 @@
+'''
+该代码定义了三个神经网络模型，即BaseLineInstanceClassifier、MILInstanceClassifier、feature_extractor和Attention。
+BaseLineInstanceClassifier和MILInstanceClassifier类用于图像分类。
+BaseLineInstanceClassifier使用预先训练好的resnet18网络从输入图像中提取特征，然后是一个全连接层，将特征映射到输出类别概率。MILInstanceClassifier与BaseLineInstanceClassifier类似，但它使用一个预先训练好的resnet50网络。
+feature_extractor类用于从输入图像中提取注意类的特征。它使用一个预先训练好的resnet18网络来提取特征，然后是一个全连接层。这个网络的输出是一个特征向量，被送入注意力网络。
+Attention类将特征提取网络的输出作为输入，并为每个实例（在这种情况下，一个实例是图像的一个区域）计算出一个注意力权重。注意力权重用于汇总实例特征，以获得袋级特征表示，然后将其输入全连接层以获得类别概率。
+'''
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
