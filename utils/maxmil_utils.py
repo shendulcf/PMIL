@@ -94,6 +94,7 @@ class Inferencedataset(data.Dataset):
         if self.transform is not None:
             img = self.transform(img)
         return img
+    
     def __len__(self):
         return len(self.grid)
 
