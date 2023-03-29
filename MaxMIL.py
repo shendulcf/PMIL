@@ -300,12 +300,83 @@ def inference(run, loader, model, save_feat=False):
                 features = torch.cat((features, feature.cpu()), dim=0)
     return probs.cpu().numpy(), features.cpu().numpy()
 
+def train(run, loader, model, criterion, optimizer):
+    model.train()
+    running_loss = 0
+    for i, (input, target) in enumerate(loader):
+        input = input.cuda()
+        target = target.cuda()
+        output, _ = model(input)
+        loss = criterion(output, target)
+        optimizer.zero_grad()  ## 清除模型的梯度信息，这一步非常重要，因为 PyTorch 默认会累加梯度信息
+        loss.backward() ## 根据损失值计算模型参数的梯度信息。
+        optimizer.step() ## 根据梯度信息更新模型参数
+        running_loss += loss.item()*input.size(0) ## .item()取出张量位置的高精度数值
+        torch.cuda.empty_cache() ## 清除 GPU 缓存，这可以帮助减少 GPU 内存的使用
+    return running_loss/len(loader.dataset)
 
 
 
+def group_argtopk(groups, data, k=1):
+    order = np.lexsort((data,groups)) # 先按照grouops进行排序，若有一样的根据data进行排序
+    groups = groups[order]
+    data = data[order]
+    index = np.empty(len(groups), dtype='bool')
+    index[-k:] = True
+    index[:-k] = groups[k:] != groups[:-k]
+    return list(order[index])
 
 
 
+def group_max(groups, data, nmax):
+    out = np.empty(nmax)
+    out[:] = np.nan
+    order = np.lexsort((data, groups))
+    groups = groups[order]
+    data = data[order]
+    index = np.empty(len(groups), 'bool')
+    index[-1] = True
+    index[:-1] = groups[1:] != groups[:-1]
+    out[groups[index]] = data[index]
+    return out
+
+def miss_wsi(dset, pred):
+    slidenames = dset.slidenames
+    wsi_names = [os.path.basename(slidename).split('.')[0] for slidename in slidenames]
+    wsi_names = np.array(wsi_names)
+    targets = np.array(dset.targets)
+    pred = np.array(pred)
+    miss_wsi_name = wsi_names[pred!=targets]
+    print("Misclassify {} wsi".format(miss_wsi_name.shape[0]))
+    print(miss_wsi_name)
+
+def prediction(run, loader, model, criterion, optimizer):
+    model.eval()
+    running_loss = 0.
+    with torch.no_grad():
+        for i, (input, target) in enumerate(loader):
+            input = input.cuda()
+            target = target.cuda()
+            output, _ = model(input)
+            loss = criterion(output, target)
+            running_loss += loss.item()*input.size(0)
+            torch.cuda.empty_cache()
+    return running_loss/len(loader.dataset)
+
+
+def calc_err(pred,real):
+    pred = np.array(pred)
+    real = np.array(real)
+    neq = np.not_equal(pred, real)
+    err = float(neq.sum())/pred.shape[0]
+    fpr = float(np.logical_and(pred==1,neq).sum())/(real==0).sum()
+    fnr = float(np.logical_and(pred==0,neq).sum())/(real==1).sum()
+    return err, fpr, fnr
+
+def optimal_thresh(fpr, tpr, thresholds, p=0):
+    loss = (fpr - tpr) - p * tpr / (fpr + tpr + 1)
+    idx = np.argmin(loss, axis=0)
+    return fpr[idx], tpr[idx], thresholds[idx]
 
 
 
