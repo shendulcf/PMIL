@@ -24,7 +24,7 @@ from sklearn.metrics import roc_curve, auc
 from model.model_maxmil import resnet34, resnet50
 from collections import OrderedDict
 from Early_Stopping import EarlyStopping
-from utils.maxmil_utils import Inferencedataset, Traindataset, ResNetEncoder, data_prefetcher
+# from utils.maxmil_utils import Inferencedataset, Traindataset, ResNetEncoder, data_prefetcher
 
 np.random.seed(24)
 torch.manual_seed(24) # 为cpu设置随机种子
@@ -61,11 +61,11 @@ parser.add_argument('--load_model', default=False, action='store_true')
 parser.add_argument('--is_test', default=False, action='store_true')
 parser.add_argument('--save_index', default=False, action='store_true')
 parser.add_argument('--device', type=int, default=0)
-parser.add_argument('--device_ids', type=int, nargs='+', default=[0,1,2,3])
+parser.add_argument('--device_ids', type=int, nargs='+', default=[0])
 
 global args, best_acc
 args = parser.parse_args()
-# torch.cuda.set_device(args.device)
+torch.cuda.set_device(args.device)
 device = torch.device(f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu')
 
 
@@ -73,21 +73,20 @@ def main():
     best_acc = 0
     model = resnet34(pretrained=True) # 设置基础模型
     model.fc = nn.Linear(model.fc.in_features, 2) # 更换最后的全连接层
-    print(model)
     if args.load_model:
         ch = torch.load(args.mil_model, map_location='cpu')
         model.load_state_dict(ch["state_dice"], strict=False)
     model.to(device) # 模型损失和
 
-    # model = nn.DataParallel(model, device_ids=args.device_ids)
+    model = nn.DataParallel(model, device_ids=args.device_ids)
 
-    if args.weighes==0.5:
+    if args.weights==0.5:
         criterion = nn.CrossEntropyLoss().cuda()
     else:
         w = torch.Tensor([1-args.weights, args.weights])
         criterion = nn.CrossEntropyLoss(w).cuda() # weight:为不平衡类进行加权
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = MultiStepLR(optimizer, nmilestones=[10,20], gamma=0.1, last_epoch=-1) # 10,20 epoch的时候lr衰减0.1
+    scheduler = MultiStepLR(optimizer, milestones=[10,20], gamma=0.1, last_epoch=-1) # 10,20 epoch的时候lr衰减0.1
     cudnn.benchmark = True # 开启自动搜索优化的算法
     # normalization
     normalize = transforms.Normalize(mean=[0.5,0.5,0.5],std=[0.1,0.1,0.1])
@@ -107,11 +106,12 @@ def main():
             val_dset,
             batch_size=args.batch_size, shuffle=False,
             num_workers=args.workers, pin_memory=False)
-    test_dset = Inferencedataset(args.test_lib, trans)
-    test_loader = torch.utils.data.DataLoader(
-        test_dset,
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=False)
+    if args.is_test:
+        test_dset = Inferencedataset(args.test_lib, trans)
+        test_loader = torch.utils.data.DataLoader(
+            test_dset,
+            batch_size=args.batch_size, shuffle=False,
+            num_workers=args.workers, pin_memory=False)
 
 
     columns = []
@@ -378,7 +378,144 @@ def optimal_thresh(fpr, tpr, thresholds, p=0):
     idx = np.argmin(loss, axis=0)
     return fpr[idx], tpr[idx], thresholds[idx]
 
+# 数据预取
+class data_prefetcher(): 
+    def __init__(self, loader):
+        self.loader = iter(loader)
+        self.stream = torch.cuda.Stream()
+        self.preload()
 
+    def preload(self):
+        try:
+            self.next_input = next(self.loader)
+        except StopIteration:
+            self.next_input = None
+            return
+        with torch.cuda.stream(self.stream):
+            self.next_input = self.next_input.cuda(non_blocking=True)
+            self.next_input = self.next_input.float()
+
+    def next(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        input = self.next_input
+        self.preload()
+        return input
+    
+class Inferencedataset(data.Dataset):
+    def __init__(self, libraryfile='', transform=None, **kwargs):
+        lib = torch.load(libraryfile, map_location='cpu')
+        slides = []
+        wsidirs = []
+        for i,name in enumerate(lib['slides']):
+            wsiname = os.path.basename(name) # return filename
+            wsiname = wsiname.split('.')[0] # 去后缀
+            # wsiname,_ = os.path.splitext(wsiname)
+            wsidir = os.path.join(args.patch_dir,wsiname)
+            wsidirs.append(wsidir)
+        print('')
+
+        grid = []
+        slideIDX = []
+        for i,g in enumerate(lib['grid']):
+            grid.extend(g)
+            slideIDX.append(i*len(g))
+
+        print('number of tiles: {}'.format(len(grid)))
+        self.slidenames = lib['slides']
+        self.slides = slides
+        self.wsidirs = wsidirs
+        self.targets = lib['targets']
+        self.grid = grid
+        self.slideIDX = slideIDX
+        self.transform = transform
+        self.level = 0
+        self.size = 256
+
+    def savetopndata(self, idxs, filename):
+        slides = []
+        grids = []
+        targets = []
+        topngrid = [self.grid[x] for x in idxs]
+        topnid = [self.slideIDX[x] for x in idxs]
+        topngrid = np.array(topngrid)
+        topnid = np.array(topnid)
+        for i in range(len(self.slidenames)):
+            slides.append(self.slidenames[i])
+            grid = topngrid[topnid==i]
+            grid = grid.tolist()
+            grids.append(grid)
+            targets.append(self.targets[i])
+        torch.save({
+            'slides': slides,
+            'grid': grids,
+            'gridIDX': list(topnid),
+            'targets': targets},
+            os.path.join(args.output, f'{filename}.ckpt'))
+            
+    def maketraindata(self, idxs):
+        self.t_data = [(self.slideIDX[x],self.grid[x],self.targets[self.slideIDX[x]]) for x in idxs]
+        return self.t_data
+        
+    def __getitem__(self,index):
+        slideIDX = self.slideIDX[index]
+        coord = self.grid[index]
+        wsidir = self.wsidirs[slideIDX]
+        img_path = os.path.join(wsidir, f"{coord[0]}_{coord[1]}.jpg")
+        img = Image.open(img_path)
+        if self.transform is not None:
+            img = self.transform(img)
+        return img
+    
+    def __len__(self):
+        return len(self.grid)
+
+class Traindataset(data.Dataset):
+    def __init__(self, data, libraryfile='', transform=None, shuffle=False):
+        lib = torch.load(libraryfile, map_location='cpu')
+        self.t_data = data
+        wsidirs = []
+        for i,name in enumerate(lib['slides']):
+            wsiname = os.path.basename(name)
+            wsiname = wsiname.split('.')[0]
+            wsidir = os.path.join(args.patch_dir, wsiname)
+            wsidirs.append(wsidir)
+        #Flatten grid
+        grid = []
+        for i,g in enumerate(lib['grid']):
+            grid.extend(g)
+        self.wsidirs = wsidirs
+        self.grid = grid
+        self.transform = transform
+        self.shuffle = shuffle
+
+    def shuffletraindata(self):
+        if self.shuffle:
+            self.t_data = random.sample(self.t_data, len(self.t_data))
+
+    def __getitem__(self,index):
+        slideIDX, coord, target = self.t_data[index]
+        wsidir = self.wsidirs[slideIDX]
+        img_path = os.path.join(wsidir, f"{coord[0]}_{coord[1]}.jpg")
+        img = Image.open(img_path)
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, target
+    
+    def __len__(self):
+        return len(self.t_data)
+
+class ResNetEncoder(nn.Module):
+    def __init__(self):
+        super(ResNetEncoder, self).__init__()
+        temp = resnet34(pretrained=True)
+        temp.fc = nn.Linear(temp.fc.in_features, 2)
+        self.feature_extractor = nn.Sequential(*list(temp.children())[:-1])
+        self.fc = temp.fc
+
+    def forward(self, x):
+        x = self.feature_extractor(x)
+        x = x.view(x.size(0), -1)
+        return self.fc(x), x
 
 
 

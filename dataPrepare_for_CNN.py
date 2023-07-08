@@ -5,9 +5,10 @@ import os
 import pandas as pd
 import random
 
-# svs 文件所在路径
+# svs 文件所在路径和对应的patch路径
 # data_dir = os.path.join(os.path.abspath(os.path.dirname(os.path.abspath(__file__)) + os.path.sep + "."), 'dataset')
-data_dir = r'E:\Workspace\dataset\test'
+data_dir = r'/home/sci/PycharmProjects/chaofan/projects/Datasets/tcga_test'
+patch_dir = r''
 # target 列表
 target_df = pd.read_csv('dataset_csv/target.csv')
 
@@ -45,12 +46,17 @@ for root, dirs, files in os.walk(data_dir):
             w, h = slide.dimensions
 
             cur_patch_cords = []
+            cords = os.listdir(patch_dir = )
 
-            for j in range(0, h, patch_size):
-                for i in range(0, w, patch_size):
-                    cur_patch_cords.append((i,j))
+            # for j in range(0, h, patch_size):
+            #     for i in range(0, w, patch_size):
+            #         cur_patch_cords.append((i,j))
 
             train_grids_list.append(cur_patch_cords)
+
+            ## ----> myself
+
+
         else:
             val_slides_list.append(os.path.join(root, filename))
             val_targets_list.append(target_df[target_df['slide'] == filename]['target'].values[0])
@@ -61,9 +67,9 @@ for root, dirs, files in os.walk(data_dir):
 
             cur_patch_cords = []
 
-            for j in range(0, h, patch_size):
-                for i in range(0, w, patch_size):
-                    cur_patch_cords.append((i,j))
+            # for j in range(0, h, patch_size):
+            #     for i in range(0, w, patch_size):
+            #         cur_patch_cords.append((i,j))
 
             val_grids_list.append(cur_patch_cords)
 
