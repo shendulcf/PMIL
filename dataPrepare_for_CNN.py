@@ -46,7 +46,7 @@ for root, dirs, files in os.walk(data_dir):
             w, h = slide.dimensions
 
             cur_patch_cords = []
-            cords = os.listdir(patch_dir = )
+            # cords = os.listdir(patch_dir)
 
             # for j in range(0, h, patch_size):
             #     for i in range(0, w, patch_size):
